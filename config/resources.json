@@ -1,0 +1,14 @@
+[
+  {
+    "name": "monthly-forecast",
+    "description": "Aggregated pipeline forecast CSV for the upcoming month",
+    "uri": "s3://marketplace-data/pipeline/monthly-forecast.csv",
+    "mimeType": "text/csv"
+  },
+  {
+    "name": "marketing-kit",
+    "description": "ZIP bundle of collateral for cold-email + ElevenLabs scripts",
+    "uri": "s3://marketplace-data/marketing/kit.zip",
+    "mimeType": "application/zip"
+  }
+]

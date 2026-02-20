@@ -1,0 +1,295 @@
+[
+  {
+    "name": "account-delete",
+    "description": "Deletes user's account, channels, subscriptions",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "User auth token"
+        }
+      },
+      "required": ["token"]
+    }
+  },
+  {
+    "name": "web-push-enable",
+    "description": "Enable web push notifications for a browser subscription",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "User auth token"
+        },
+        "subscription": {
+          "type": "string",
+          "description": "Browser push subscription serialized with JSON.stringify"
+        }
+      },
+      "required": ["token", "subscription"]
+    }
+  },
+  {
+    "name": "web-push-disable",
+    "description": "Disable web push notifications for a browser subscription",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "User auth token"
+        },
+        "subscription": {
+          "type": "string",
+          "description": "Browser push subscription serialized with JSON.stringify"
+        }
+      },
+      "required": ["token", "subscription"]
+    }
+  },
+  {
+    "name": "otp-request",
+    "description": "Request a one-time password sent to phone or email",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "phone": {
+          "type": "string",
+          "description": "Phone number to send OTP to"
+        },
+        "email": {
+          "type": "string",
+          "description": "Email address to send OTP to"
+        }
+      },
+      "oneOf": [
+        {"required": ["phone"]},
+        {"required": ["email"]}
+      ]
+    }
+  },
+  {
+    "name": "otp-verify",
+    "description": "Verify OTP code and receive auth token",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "phone": {
+          "type": "string",
+          "description": "Phone number the OTP was sent to"
+        },
+        "email": {
+          "type": "string",
+          "description": "Email address the OTP was sent to"
+        },
+        "code": {
+          "type": "string",
+          "description": "OTP code to verify"
+        }
+      },
+      "required": ["code"],
+      "oneOf": [
+        {"required": ["phone", "code"]},
+        {"required": ["email", "code"]}
+      ]
+    }
+  },
+  {
+    "name": "channel-notify",
+    "description": "Send a message to a channel",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "User auth token"
+        },
+        "channel": {
+          "type": "string",
+          "description": "Channel identifier"
+        },
+        "message": {
+          "type": "string",
+          "description": "Message to send to the channel"
+        }
+      },
+      "required": ["token", "channel", "message"]
+    }
+  },
+  {
+    "name": "channel-messages",
+    "description": "Get list of messages for a channel. If channel.poster is owner, all can read messages. If channel.poster is public only poster and channel owner can read.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "User auth token"
+        },
+        "channel": {
+          "type": "string",
+          "description": "Channel identifier"
+        }
+      },
+      "required": ["token", "channel"]
+    }
+  },
+  {
+    "name": "channel-put",
+    "description": "Creates or updates channels",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "User auth token"
+        },
+        "channel": {
+          "type": "string",
+          "description": "Channel identifier"
+        },
+        "name": {
+          "type": "string",
+          "description": "Channel display name"
+        },
+        "address": {
+          "type": "string",
+          "description": "Full addresss of the business"
+        },
+        "geo_lat": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90,
+          "description": "Latitude of the business"
+        },
+        "geo_lon": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180,
+          "description": "Longitude of the business"
+        },
+        "category": {
+          "type": "string",
+          "description": "Channel category"
+        },
+        "description": {
+          "type": "string",
+          "description": "Channel description"
+        },
+        "poster": {
+          "type": "string",
+          "enum": ["owner", "public"],
+          "description": "Whether public users can post messages"
+        }
+      },
+      "required": ["token", "channel", "name", "category", "poster"],
+      "dependencies": {
+        "geo_lat": ["geo_lon"],
+        "geo_lon": ["geo_lat"]
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "channel-delete",
+    "description": "Deletes a channel that belongs to an owner",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "User auth token"
+        },
+        "channel": {
+          "type": "string",
+          "description": "Channel identifier"
+        }
+      },
+      "required": ["token", "channel"]
+    }
+  },
+  {
+    "name": "channels-list",
+    "description": "List all channels that belong to you",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "User auth token"
+        }
+      },
+      "required": ["token"]
+    }
+  },
+  {
+    "name": "channels-for-category",
+    "description": "Public can list all channels of a specific category which are channel.poster=owner (subscribeable)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "User auth token"
+        },
+        "category": {
+          "type": "string",
+          "description": "Category of the channel"
+        }
+      },
+      "required": ["token", "category"]
+    }
+  },
+  {
+    "name": "channel-subscribe",
+    "description": "Subscribe to a channel which is subscribeable (poster=owner)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "User auth token"
+        },
+        "channel": {
+          "type": "string",
+          "description": "Channel identifier to subscribe to"
+        }
+      },
+      "required": ["token", "channel"]
+    }
+  },
+  {
+    "name": "channel-unsubscribe",
+    "description": "Unsubscribe from a channel",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "User auth token"
+        },
+        "channel": {
+          "type": "string",
+          "description": "Channel identifier to unsubscribe from"
+        }
+      },
+      "required": ["token", "channel"]
+    }
+  },
+  {
+    "name": "subscriptions-list",
+    "description": "List all subscriptions for the authenticated user",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "User auth token"
+        }
+      },
+      "required": ["token"]
+    }
+  }
+]

@@ -2,9 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
-BIN_DIR="$ROOT_DIR/bin"
+BUILD_DIR="$ROOT_DIR/target"
 ZIP_PATH="$ROOT_DIR/lambda.zip"
-GO_BUILD=${GO_BUILD:-"$(command -v go)"}
 
 usage() {
   cat <<'EOF'
@@ -15,6 +14,10 @@ Commands:
   deploy   Build (if needed), upload to S3, and update Lambda code
   clean    Remove build artifacts
   help     Show this help
+
+Prerequisites:
+  - cargo-lambda: cargo install cargo-lambda
+  - AWS CLI: aws configure
 EOF
 }
 
@@ -39,19 +42,50 @@ load_env() {
 }
 
 build() {
-  mkdir -p "$BIN_DIR"
-  local pkg_dir="$BIN_DIR/package"
+  echo "Building Lambda bootstrap (arm64, AL2023)..."
+
+  # Use cargo-lambda for cross-compiling to Lambda's ARM64 runtime.
+  # If cargo-lambda is available, use it; otherwise fall back to standard cross-compile.
+  if command -v cargo-lambda &>/dev/null; then
+    cargo lambda build \
+      --release \
+      --arm64 \
+      --features lambda \
+      --package marketplace \
+      --manifest-path "$ROOT_DIR/Cargo.toml"
+
+    local bootstrap_path="$BUILD_DIR/lambda/marketplace/bootstrap"
+  else
+    echo "cargo-lambda not found, using standard cross-compile..."
+    echo "Install with: cargo install cargo-lambda"
+    echo "Or: pip3 install cargo-lambda"
+
+    # Standard cross-compile (requires aarch64 target)
+    rustup target add aarch64-unknown-linux-musl 2>/dev/null || true
+    cargo build \
+      --release \
+      --target aarch64-unknown-linux-musl \
+      --features lambda \
+      --package marketplace \
+      --manifest-path "$ROOT_DIR/Cargo.toml"
+
+    local bootstrap_path="$BUILD_DIR/aarch64-unknown-linux-musl/release/marketplace"
+  fi
+
+  local pkg_dir="$BUILD_DIR/package"
   rm -rf "$pkg_dir"
   mkdir -p "$pkg_dir"
 
-  echo "Building Lambda bootstrap (arm64, AL2023)..."
-  GOOS=linux GOARCH=arm64 CGO_ENABLED=0 "$GO_BUILD" build \
-    -tags lambda.norpc \
-    -o "$pkg_dir/bootstrap" ./cmd/lambda
+  cp "$bootstrap_path" "$pkg_dir/bootstrap" 2>/dev/null || {
+    echo "Binary not found at $bootstrap_path"
+    echo "Checking for binary..."
+    find "$BUILD_DIR" -name "marketplace" -type f 2>/dev/null | head -5
+    exit 1
+  }
 
   if [[ -d "$ROOT_DIR/config" ]]; then
     echo "Copying config/ into package..."
-    rsync -a "$ROOT_DIR/config" "$pkg_dir/"
+    rsync -aL "$ROOT_DIR/config" "$pkg_dir/"
   fi
 
   echo "Packaging lambda.zip..."
@@ -60,8 +94,9 @@ build() {
 }
 
 clean() {
-  rm -rf "$BIN_DIR" "$ZIP_PATH"
-  echo "Artifacts removed"
+  rm -rf "$BUILD_DIR/package" "$ZIP_PATH"
+  echo "Packaging artifacts removed"
+  echo "Run 'cargo clean' to remove all build artifacts"
 }
 
 deploy() {

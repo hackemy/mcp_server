@@ -1,17 +1,17 @@
-# Marketplace MCP Server
+# MCP Server
 
-A production-grade [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server built in Rust, implementing the **Streamable HTTP** transport (`2025-03-26` spec). Exposes a marketplace notification platform as MCP tools — deployable as a standalone HTTP server or an AWS Lambda function.
+A production-grade [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server built in Rust, implementing the **Streamable HTTP** transport (`2025-03-26` spec). Exposes a notification platform as MCP tools — deployable as a standalone HTTP server or an AWS Lambda function.
 
 ## Architecture
 
 ```
 mcp_server/
-├── config/
-│   ├── tools.json              # Tool definitions (15 tools)
-│   └── resources.json          # Resource definitions
 ├── crates/
 │   ├── mcpserver/              # Reusable MCP library (protocol, routing, validation)
-│   └── marketplace/            # Application binary (tools, auth, DynamoDB, notifications)
+│   └── app/                    # Application binary (tools, auth, DynamoDB, notifications)
+│       ├── tools.json          # Tool definitions (15 tools)
+│       ├── resources.json      # Resource definitions
+│       └── src/
 ├── nginx/
 │   └── mcp.conf                # Nginx reverse proxy config
 └── scripts/
@@ -23,7 +23,7 @@ mcp_server/
 | Crate | Purpose |
 |---|---|
 | `mcpserver` | Protocol-agnostic MCP library — JSON-RPC routing, tool/resource loading, input validation, Axum HTTP transport |
-| `marketplace` | Application layer — JWT auth, DynamoDB storage, SNS/SES notifications, tool handler implementations |
+| `app` | Application layer — JWT auth, DynamoDB storage, SNS/SES notifications, tool handler implementations |
 
 ## Prerequisites
 
@@ -39,7 +39,7 @@ mcp_server/
 | Variable | Default | Required | Description |
 |---|---|---|---|
 | `PORT` | `8080` | No | HTTP listen port (local mode only) |
-| `TABLE_NAME` | `marketplace` | No | DynamoDB table name |
+| `TABLE_NAME` | `app` | No | DynamoDB table name |
 | `JWT_SECRET` | `""` | Yes | HMAC-SHA256 key for signing JWTs |
 | `SES_FROM_EMAIL` | `""` | Yes | Sender email for OTP delivery |
 | `VAPID_PUBLIC_KEY` | `""` | No | VAPID public key for web push |
@@ -48,29 +48,19 @@ mcp_server/
 | `AWS_ACCESS_KEY_ID` | — | Yes* | AWS credentials (not needed if using IAM roles) |
 | `AWS_SECRET_ACCESS_KEY` | — | Yes* | AWS credentials (not needed if using IAM roles) |
 
-Create a `.env` file at the project root for local development:
-
-```env
-PORT=8080
-TABLE_NAME=marketplace
-JWT_SECRET=your-secret-key-here
-SES_FROM_EMAIL=noreply@example.com
-AWS_REGION=us-east-1
-AWS_ACCESS_KEY_ID=AKIA...
-AWS_SECRET_ACCESS_KEY=...
-VAPID_PUBLIC_KEY=...
-VAPID_PRIVATE_KEY=...
-```
+Create a `.env` file at the project root for local development using the `.env-example`
 
 ### Tool & Resource Definitions
 
-Tools are defined in `config/tools.json` — each tool specifies its name, description, and JSON Schema for input validation (including `required`, `oneOf`, and `dependencies` constraints). Resources are defined in `config/resources.json`.
+Tools are defined in `crates/app/tools.json` — each tool specifies its name, description, and JSON Schema for input validation (including `required`, `oneOf`, and `dependencies` constraints). Resources are defined in `crates/app/resources.json`.
+
+Both files are embedded into the binary at compile time via `include_bytes!`, so no runtime file access is needed.
 
 To add a new tool:
 
-1. Add its definition to `config/tools.json`
-2. Create a handler file in `crates/marketplace/src/tools/`
-3. Register it in `crates/marketplace/src/tools/mod.rs` via `register_all()`
+1. Add its definition to `crates/app/tools.json`
+2. Create a handler file in `crates/app/src/tools/`
+3. Register it in `crates/app/src/tools/mod.rs` via `register_all()`
 
 ### DynamoDB Table
 
@@ -86,7 +76,7 @@ Create the table via AWS CLI:
 
 ```bash
 aws dynamodb create-table \
-  --table-name marketplace \
+  --table-name app \
   --attribute-definitions \
     AttributeName=PK,AttributeType=S \
     AttributeName=SK,AttributeType=S \
@@ -153,7 +143,7 @@ cargo test
 
 # Run tests for a specific crate
 cargo test -p mcpserver
-cargo test -p marketplace
+cargo test -p app
 
 # Run a specific test
 cargo test test_otp_verify_success
@@ -266,8 +256,8 @@ Create a Lambda execution role with these policies:
         "dynamodb:BatchWriteItem"
       ],
       "Resource": [
-        "arn:aws:dynamodb:*:*:table/marketplace",
-        "arn:aws:dynamodb:*:*:table/marketplace/index/*"
+        "arn:aws:dynamodb:*:*:table/app",
+        "arn:aws:dynamodb:*:*:table/app/index/*"
       ]
     },
     {
@@ -298,12 +288,12 @@ Create the function (first-time only):
 
 ```bash
 aws lambda create-function \
-  --function-name marketplace-mcp \
+  --function-name app-mcp \
   --runtime provided.al2023 \
   --handler bootstrap \
   --architectures arm64 \
   --role arn:aws:iam::ACCOUNT_ID:role/your-lambda-role \
-  --environment "Variables={TABLE_NAME=marketplace,JWT_SECRET=your-secret,SES_FROM_EMAIL=noreply@example.com,AWS_REGION=us-east-1}" \
+  --environment "Variables={TABLE_NAME=app,JWT_SECRET=your-secret,SES_FROM_EMAIL=noreply@example.com,AWS_REGION=us-east-1}" \
   --timeout 30 \
   --memory-size 256 \
   --region us-east-1 \
@@ -314,12 +304,12 @@ aws lambda create-function \
 
 ```bash
 aws lambda create-function-url-config \
-  --function-name marketplace-mcp \
+  --function-name app-mcp \
   --auth-type NONE
 
 # Or with IAM auth:
 aws lambda create-function-url-config \
-  --function-name marketplace-mcp \
+  --function-name app-mcp \
   --auth-type AWS_IAM
 ```
 
@@ -332,9 +322,9 @@ export AWS_ACCESS_KEY_ID=AKIA...
 export AWS_SECRET_ACCESS_KEY=...
 export AWS_REGION=us-east-1
 export AWS_ACCOUNT_ID=123456789012
-export LAMBDA_FUNCTION_NAME=marketplace-mcp
+export LAMBDA_FUNCTION_NAME=app-mcp
 export LAMBDA_S3_BUCKET=your-lambda-deploy-bucket
-export LAMBDA_S3_KEY=marketplace-mcp/lambda.zip
+export LAMBDA_S3_KEY=app-mcp/lambda.zip
 ```
 
 Run the deploy script:
@@ -350,14 +340,14 @@ Run the deploy script:
 ./scripts/deploy.sh clean
 ```
 
-The build step compiles for `aarch64` (ARM64/Graviton), packages the `bootstrap` binary and `config/` directory into `lambda.zip`, then uploads to S3 and updates the Lambda function code.
+The build step compiles for `aarch64` (ARM64/Graviton) and packages the `bootstrap` binary into `lambda.zip`. Tool and resource definitions are embedded at compile time, so no config files are needed at runtime. The zip is uploaded to S3 and the Lambda function code is updated.
 
 ### Updating Environment Variables
 
 ```bash
 aws lambda update-function-configuration \
-  --function-name marketplace-mcp \
-  --environment "Variables={TABLE_NAME=marketplace,JWT_SECRET=new-secret,SES_FROM_EMAIL=noreply@example.com}"
+  --function-name app-mcp \
+  --environment "Variables={TABLE_NAME=app,JWT_SECRET=new-secret,SES_FROM_EMAIL=noreply@example.com}"
 ```
 
 ## API Reference

@@ -51,10 +51,10 @@ build() {
       --release \
       --arm64 \
       --features lambda \
-      --package marketplace \
+      --package app \
       --manifest-path "$ROOT_DIR/Cargo.toml"
 
-    local bootstrap_path="$BUILD_DIR/lambda/marketplace/bootstrap"
+    local bootstrap_path="$BUILD_DIR/lambda/app/bootstrap"
   else
     echo "cargo-lambda not found, using standard cross-compile..."
     echo "Install with: cargo install cargo-lambda"
@@ -66,10 +66,10 @@ build() {
       --release \
       --target aarch64-unknown-linux-musl \
       --features lambda \
-      --package marketplace \
+      --package app \
       --manifest-path "$ROOT_DIR/Cargo.toml"
 
-    local bootstrap_path="$BUILD_DIR/aarch64-unknown-linux-musl/release/marketplace"
+    local bootstrap_path="$BUILD_DIR/aarch64-unknown-linux-musl/release/app"
   fi
 
   local pkg_dir="$BUILD_DIR/package"
@@ -79,14 +79,9 @@ build() {
   cp "$bootstrap_path" "$pkg_dir/bootstrap" 2>/dev/null || {
     echo "Binary not found at $bootstrap_path"
     echo "Checking for binary..."
-    find "$BUILD_DIR" -name "marketplace" -type f 2>/dev/null | head -5
+    find "$BUILD_DIR" -name "app" -type f 2>/dev/null | head -5
     exit 1
   }
-
-  if [[ -d "$ROOT_DIR/config" ]]; then
-    echo "Copying config/ into package..."
-    rsync -aL "$ROOT_DIR/config" "$pkg_dir/"
-  fi
 
   echo "Packaging lambda.zip..."
   (cd "$pkg_dir" && zip -X -r "$ZIP_PATH" . >/dev/null)

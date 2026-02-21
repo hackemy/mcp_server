@@ -65,13 +65,13 @@ mod tests {
     }
 
     fn setup_server(deps: Arc<Deps>) -> mcpserver::Server {
-        let tools_json = include_bytes!("../../../../config/tools.json");
-        let resources_json = include_bytes!("../../../../config/resources.json");
+        let tools_json = include_bytes!("../../tools.json");
+        let resources_json = include_bytes!("../../resources.json");
 
         let mut srv = mcpserver::Server::builder()
             .tools_json(tools_json)
             .resources_json(resources_json)
-            .server_info("test-marketplace", "0.0.1")
+            .server_info("test-app", "0.0.1")
             .build();
 
         register_all(&mut srv, deps);

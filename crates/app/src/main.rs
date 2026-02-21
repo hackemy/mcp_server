@@ -12,7 +12,7 @@ use notify::webpush::WebPushKeys;
 use tools::Deps;
 
 async fn build_deps() -> Result<Arc<Deps>, Box<dyn std::error::Error>> {
-    let table_name = std::env::var("TABLE_NAME").unwrap_or_else(|_| "marketplace".into());
+    let table_name = std::env::var("TABLE_NAME").unwrap_or_else(|_| "app".into());
     let db = DynamoClient::new(&table_name).await?;
 
     let aws_config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
@@ -34,9 +34,9 @@ async fn build_deps() -> Result<Arc<Deps>, Box<dyn std::error::Error>> {
 
 fn build_server(deps: Arc<Deps>) -> mcpserver::Server {
     let mut srv = mcpserver::Server::builder()
-        .tools_file("config/tools.json")
-        .resources_file("config/resources.json")
-        .server_info("marketplace-mcp", "1.0.0")
+        .tools_json(include_bytes!("../tools.json"))
+        .resources_json(include_bytes!("../resources.json"))
+        .server_info("app-mcp", "1.0.0")
         .build();
 
     tools::register_all(&mut srv, deps);

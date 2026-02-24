@@ -1,8 +1,8 @@
 [package]
 name = "mcpserver"
 version = "0.3.0"
-edition = "2021"
-rust-version = "1.75"
+edition = "2024"
+rust-version = "1.85"
 description = "MCP (Model Context Protocol) server library for Rust — a pure protocol handler implementing the 2025-03-26 spec"
 license = "MIT"
 repository = "https://github.com/hackemy/mcp_server"

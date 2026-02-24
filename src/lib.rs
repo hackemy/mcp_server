@@ -1,45 +1,43 @@
-//! `mcpserver` — A reusable MCP (Model Context Protocol) server library.
+//! `mcpserver` — A Rust library for building MCP (Model Context Protocol) servers.
 //!
-//! Implements the MCP 2025-03-26 specification with Streamable HTTP transport.
-//! Configure with tools/resources JSON, register handlers, and serve via Axum.
+//! Implements the MCP 2025-03-26 specification as a pure protocol handler.
+//! Define tools and resources in JSON, register async handlers, and call
+//! `Server::handle()` from any HTTP framework, Lambda function, or test harness.
 //!
 //! # Quick start
 //!
-//! ```rust,no_run
-//! use std::sync::Arc;
-//! use mcpserver::{Server, FnToolHandler, http_router, text_result};
+//! ```rust
+//! use mcpserver::{Server, FnToolHandler, text_result, JsonRpcRequest};
 //! use serde_json::Value;
 //!
-//! #[tokio::main]
-//! async fn main() {
-//!     let mut server = Server::builder()
-//!         .tools_file("tools.json")
-//!         .resources_file("resources.json")
-//!         .server_info("my-server", "0.1.0")
-//!         .build();
+//! # async fn example() {
+//! let mut server = Server::builder()
+//!     .tools_json(r#"[{"name":"echo","description":"echoes","inputSchema":{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}}]"#.as_bytes())
+//!     .server_info("my-server", "0.1.0")
+//!     .build();
 //!
-//!     server.handle_tool("echo", FnToolHandler::new(|args: Value| async move {
-//!         let msg = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
-//!         Ok(text_result(msg))
-//!     }));
+//! server.handle_tool("echo", FnToolHandler::new(|args: Value| async move {
+//!     let msg = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
+//!     Ok(text_result(msg))
+//! }));
 //!
-//!     let app = http_router(server);
-//!     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-//!     axum::serve(listener, app).await.unwrap();
-//! }
+//! // Use from any HTTP framework — just deserialize the body and call handle():
+//! let req: JsonRpcRequest = serde_json::from_str(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#).unwrap();
+//! let resp = server.handle(req).await;
+//! // resp implements Serialize — pass it to axum::Json, serde_json, etc.
+//! let json = serde_json::to_string(&resp).unwrap();
+//! # }
 //! ```
 
 pub mod loader;
 pub mod server;
-pub mod transport_http;
 pub mod types;
 mod validate;
 
 // Re-export the most commonly used items at the crate root.
 pub use loader::{load_resources, load_tools, parse_resources, parse_tools};
 pub use server::{FnToolHandler, ResourceHandler, Server, ServerBuilder, ToolHandler};
-pub use transport_http::http_router;
 pub use types::{
     error_result, new_error_response, text_result, ContentBlock, JsonRpcRequest, JsonRpcResponse,
-    McpError, Resource, ResourceContent, RpcError, Tool, ToolResult, PROTOCOL_VERSION,
+    McpError, McpResponse, Resource, ResourceContent, RpcError, Tool, ToolResult, PROTOCOL_VERSION,
 };

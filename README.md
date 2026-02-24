@@ -3,56 +3,44 @@
 [![crates.io](https://img.shields.io/crates/v/mcpserver.svg)](https://crates.io/crates/mcpserver)
 [![docs.rs](https://docs.rs/mcpserver/badge.svg)](https://docs.rs/mcpserver)
 
-A Rust library for building [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) servers, implementing the **2025-03-26** specification with Streamable HTTP transport.
+A Rust library for building [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) servers, implementing the **2025-03-26** specification.
 
-Define your tools and resources in JSON, register async handlers, and serve over HTTP with Axum — or call `Server::handle()` directly for Lambda / custom integrations.
+`mcpserver` is a **pure protocol handler** — it parses JSON-RPC, routes MCP methods, validates tool arguments, and dispatches to your handlers. It has zero HTTP or transport opinion: you bring your own framework (Axum, Lambda, Warp, etc.) and own the routing, middleware, and status codes.
 
 ## Installation
 
 ```toml
 [dependencies]
-mcpserver = "0.1"
-tokio = { version = "1", features = ["full"] }
+mcpserver = "0.2"
 serde_json = "1"
 ```
 
-Or via the CLI:
-
-```bash
-cargo add mcpserver tokio --features tokio/full
-cargo add serde_json
-```
-
-You'll also need `axum` if you want to add custom routes alongside the MCP endpoint, and `async-trait` for struct-based handlers:
-
-```bash
-cargo add axum async-trait
-```
+The library has no runtime or HTTP dependencies. Add `axum`, `tokio`, etc. only if your application needs them.
 
 ## Quick start
 
 ```rust
-use mcpserver::{Server, FnToolHandler, http_router, text_result};
+use mcpserver::{Server, FnToolHandler, text_result, JsonRpcRequest};
 use serde_json::Value;
 
-#[tokio::main]
-async fn main() {
-    let mut server = Server::builder()
-        .tools_file("tools.json")
-        .resources_file("resources.json")
-        .server_info("my-server", "0.1.0")
-        .build();
+// Build the server and register handlers.
+let mut server = Server::builder()
+    .tools_file("tools.json")
+    .resources_file("resources.json")
+    .server_info("my-server", "0.1.0")
+    .build();
 
-    server.handle_tool("echo", FnToolHandler::new(|args: Value| async move {
-        let msg = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
-        Ok(text_result(msg))
-    }));
+server.handle_tool("echo", FnToolHandler::new(|args: Value| async move {
+    let msg = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    Ok(text_result(msg))
+}));
 
-    // http_router() provides POST /mcp — merge with your own routes as needed.
-    let app = http_router(server);
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    axum::serve(listener, app).await.unwrap();
-}
+// Deserialize from any source, call handle(), serialize the response.
+let req: JsonRpcRequest = serde_json::from_str(body).unwrap();
+let resp = server.handle(req).await;
+
+// resp.is_notification() → true for fire-and-forget methods (return 202, no body)
+let json = serde_json::to_string(&resp).unwrap();
 ```
 
 ## Defining tools (`tools.json`)
@@ -149,35 +137,42 @@ impl ResourceHandler for ConfigReader {
 }
 ```
 
-## HTTP transport
+## HTTP integration (Axum example)
 
-`http_router()` returns an `axum::Router` with a single route: `POST /mcp` (the MCP JSON-RPC endpoint). Session management via `mcp-session-id` headers is handled automatically.
-
-Merge it into your own router to add health checks, landing pages, or middleware:
+Since the library is transport-agnostic, you wire up HTTP yourself. Here's the pattern with Axum:
 
 ```rust
-use axum::{routing::get, Json, Router};
-use mcpserver::{Server, http_router};
-
-let server = Server::builder().build();
-let app = Router::new()
-    .route("/healthz", get(|| async { Json(serde_json::json!({"status": "ok"})) }))
-    .merge(http_router(server));
-```
-
-## Custom integration (Lambda, etc.)
-
-For environments where you control the HTTP layer (e.g., AWS Lambda), use `Server::handle()` directly:
-
-```rust
+use std::sync::Arc;
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json, Router, routing::post, body::Body};
 use mcpserver::{Server, JsonRpcRequest};
 
-async fn my_lambda_handler(server: &Server, body: &str) -> String {
-    let req: JsonRpcRequest = serde_json::from_str(body).unwrap();
+async fn handle_mcp(
+    State(server): State<Arc<Server>>,
+    Json(req): Json<JsonRpcRequest>,
+) -> impl IntoResponse {
     let resp = server.handle(req).await;
-    serde_json::to_string(&resp).unwrap()
+    if resp.is_notification() {
+        return (StatusCode::ACCEPTED, Body::empty()).into_response();
+    }
+    Json(&resp).into_response()
 }
+
+let server = Arc::new(Server::builder().build());
+let app = Router::new()
+    .route("/mcp", post(handle_mcp))
+    .with_state(server);
 ```
+
+This makes it trivial to mount multiple MCP endpoints with different middleware:
+
+```rust
+let app = Router::new()
+    .route("/mcp_public", post(handle_mcp))
+    .route("/mcp_private", post(handle_mcp).layer(auth_middleware))
+    .with_state(server);
+```
+
+See [`examples/basic_server.rs`](examples/basic_server.rs) for a complete working example with session management, health checks, and tool handlers.
 
 ## Running the example
 
@@ -216,14 +211,14 @@ An example Nginx config for TLS termination is provided in [`nginx/mcp.conf`](ng
 
 | Method | Description |
 |---|---|
-| `initialize` | Handshake, returns server capabilities and session ID |
+| `initialize` | Handshake, returns server capabilities |
 | `ping` | Keepalive |
 | `tools/list` | List available tools |
 | `tools/call` | Execute a tool |
 | `resources/list` | List available resources |
 | `resources/read` | Read a resource by name or URI |
-| `notifications/initialized` | Client notification (HTTP 202) |
-| `notifications/cancelled` | Client notification (HTTP 202) |
+| `notifications/initialized` | Client notification (no response body) |
+| `notifications/cancelled` | Client notification (no response body) |
 
 ## License
 

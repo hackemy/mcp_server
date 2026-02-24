@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde_json::value::RawValue;
 use serde_json::{json, Value};
 use tracing;
 
@@ -48,14 +49,16 @@ where
 
 /// The MCP server. Create with `ServerBuilder`, register handlers, then serve.
 pub struct Server {
-    pub(crate) server_name: String,
-    pub(crate) server_version: String,
     pub(crate) tools: HashMap<String, Tool>,
-    pub(crate) tool_list: Vec<Tool>,
     pub(crate) resources: HashMap<String, Resource>,
-    pub(crate) resource_list: Vec<Resource>,
     pub(crate) tool_handlers: HashMap<String, Arc<dyn ToolHandler>>,
     pub(crate) resource_handlers: HashMap<String, Arc<dyn ResourceHandler>>,
+    /// Pre-serialized initialize result — shared by reference, never copied.
+    initialize_result: Arc<RawValue>,
+    /// Pre-serialized tools/list result.
+    tools_list_result: Arc<RawValue>,
+    /// Pre-serialized resources/list result.
+    resources_list_result: Arc<RawValue>,
 }
 
 impl Server {
@@ -75,20 +78,24 @@ impl Server {
     }
 
     /// Route a JSON-RPC request to the appropriate MCP handler.
-    pub async fn handle(&self, req: JsonRpcRequest) -> JsonRpcResponse {
+    ///
+    /// Takes ownership of the request and moves fields into sub-handlers
+    /// without cloning.  For cached endpoints the response holds an `Arc`
+    /// reference to pre-serialized JSON — zero data copying.
+    pub async fn handle(&self, req: JsonRpcRequest) -> McpResponse {
         if req.jsonrpc != "2.0" {
-            return new_error_response(req.id, ERR_CODE_INVALID_REQ, "jsonrpc must be '2.0'");
+            return McpResponse::error(req.id, ERR_CODE_INVALID_REQ, "jsonrpc must be '2.0'");
         }
 
         match req.method.as_str() {
-            "initialize" => self.handle_initialize(req),
-            "ping" => self.handle_ping(req),
-            "notifications/initialized" | "notifications/cancelled" => notification_response(),
-            "tools/list" => self.handle_tools_list(req),
-            "tools/call" => self.handle_tools_call(req).await,
-            "resources/list" => self.handle_resources_list(req),
-            "resources/read" => self.handle_resources_read(req).await,
-            _ => new_error_response(
+            "initialize" => self.handle_initialize(req.id, req.params),
+            "ping" => McpResponse::ok(req.id, json!({})),
+            "notifications/initialized" | "notifications/cancelled" => McpResponse::notification(),
+            "tools/list" => self.handle_tools_list(req.id),
+            "tools/call" => self.handle_tools_call(req.id, req.params).await,
+            "resources/list" => self.handle_resources_list(req.id),
+            "resources/read" => self.handle_resources_read(req.id, req.params).await,
+            _ => McpResponse::error(
                 req.id,
                 ERR_CODE_NO_METHOD,
                 format!("Method not found: {}", req.method),
@@ -96,58 +103,55 @@ impl Server {
         }
     }
 
-    fn handle_initialize(&self, req: JsonRpcRequest) -> JsonRpcResponse {
-        if let Some(params) = &req.params {
-            if let Ok(p) = serde_json::from_value::<InitializeParams>(params.clone()) {
-                let client_name = p.client_info.as_ref().map_or("", |c| c.name.as_str());
-                let client_version = p.client_info.as_ref().map_or("", |c| c.version.as_str());
-                tracing::info!(
-                    client_name,
-                    client_version,
-                    protocol_version = ?p.protocol_version,
-                    "initialize"
-                );
-            }
+    fn handle_initialize(&self, id: Option<Value>, params: Option<Value>) -> McpResponse {
+        // Log client info by borrowing directly into the params Value — no
+        // deserialization, no clone.
+        if let Some(ref params) = params {
+            let client_name = params
+                .pointer("/clientInfo/name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let client_version = params
+                .pointer("/clientInfo/version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let protocol_version = params
+                .get("protocolVersion")
+                .and_then(|v| v.as_str());
+            tracing::info!(
+                client_name,
+                client_version,
+                protocol_version,
+                "initialize"
+            );
         }
 
-        let result = json!({
-            "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": {
-                "tools": {"listChanged": false},
-                "resources": {"subscribe": false, "listChanged": false},
-            },
-            "serverInfo": {
-                "name": self.server_name,
-                "version": self.server_version,
-            },
-        });
-
-        new_ok_response(req.id, result)
+        McpResponse::cached(id, &self.initialize_result)
     }
 
-    fn handle_ping(&self, req: JsonRpcRequest) -> JsonRpcResponse {
-        new_ok_response(req.id, json!({}))
+    fn handle_tools_list(&self, id: Option<Value>) -> McpResponse {
+        McpResponse::cached(id, &self.tools_list_result)
     }
 
-    fn handle_tools_list(&self, req: JsonRpcRequest) -> JsonRpcResponse {
-        let result = json!({ "tools": self.tool_list });
-        new_ok_response(req.id, result)
-    }
-
-    async fn handle_tools_call(&self, req: JsonRpcRequest) -> JsonRpcResponse {
-        let params: ToolCallParams = match req.params.as_ref() {
-            Some(p) => match serde_json::from_value(p.clone()) {
+    async fn handle_tools_call(
+        &self,
+        id: Option<Value>,
+        params: Option<Value>,
+    ) -> McpResponse {
+        // Consume the params Value directly — no clone.
+        let params: ToolCallParams = match params {
+            Some(p) => match serde_json::from_value(p) {
                 Ok(p) => p,
                 Err(e) => {
-                    return new_error_response(
-                        req.id,
+                    return McpResponse::error(
+                        id,
                         ERR_CODE_BAD_PARAMS,
                         format!("invalid params: {}", e),
                     )
                 }
             },
             None => {
-                return new_error_response(req.id, ERR_CODE_BAD_PARAMS, "params required");
+                return McpResponse::error(id, ERR_CODE_BAD_PARAMS, "params required");
             }
         };
 
@@ -157,12 +161,12 @@ impl Server {
             params.arguments
         };
 
-        // Find tool definition.
+        // Find tool definition (borrow, no clone).
         let tool = match self.tools.get(&params.name) {
             Some(t) => t,
             None => {
-                return new_error_response(
-                    req.id,
+                return McpResponse::error(
+                    id,
                     ERR_CODE_NO_METHOD,
                     format!("Unknown tool: {}", params.name),
                 )
@@ -171,73 +175,77 @@ impl Server {
 
         // Validate arguments.
         if let Err(e) = tool.validate_arguments(&args) {
-            return new_error_response(req.id, ERR_CODE_BAD_PARAMS, e);
+            return McpResponse::error(id, ERR_CODE_BAD_PARAMS, e);
         }
 
-        // Find handler.
+        // Find handler (borrow, no clone).
         let handler = match self.tool_handlers.get(&params.name) {
             Some(h) => h,
             None => {
-                return new_error_response(
-                    req.id,
+                return McpResponse::error(
+                    id,
                     ERR_CODE_INTERNAL,
                     format!("no handler for tool: {}", params.name),
                 )
             }
         };
 
-        // Execute handler.
+        // Execute handler and convert result to Value.
         let result = match handler.call(args).await {
             Ok(r) => r,
             Err(e) => error_result(e.to_string()),
         };
 
         let result_value = serde_json::to_value(&result).unwrap_or(json!(null));
-        new_ok_response(req.id, result_value)
+        McpResponse::ok(id, result_value)
     }
 
-    fn handle_resources_list(&self, req: JsonRpcRequest) -> JsonRpcResponse {
-        let result = json!({ "resources": self.resource_list });
-        new_ok_response(req.id, result)
+    fn handle_resources_list(&self, id: Option<Value>) -> McpResponse {
+        McpResponse::cached(id, &self.resources_list_result)
     }
 
-    async fn handle_resources_read(&self, req: JsonRpcRequest) -> JsonRpcResponse {
-        let params: ResourceReadParams = match req.params.as_ref() {
-            Some(p) => match serde_json::from_value(p.clone()) {
+    async fn handle_resources_read(
+        &self,
+        id: Option<Value>,
+        params: Option<Value>,
+    ) -> McpResponse {
+        // Consume the params Value directly — no clone.
+        let params: ResourceReadParams = match params {
+            Some(p) => match serde_json::from_value(p) {
                 Ok(p) => p,
                 Err(e) => {
-                    return new_error_response(
-                        req.id,
+                    return McpResponse::error(
+                        id,
                         ERR_CODE_BAD_PARAMS,
                         format!("invalid params: {}", e),
                     )
                 }
             },
             None => {
-                return new_error_response(req.id, ERR_CODE_BAD_PARAMS, "params required");
+                return McpResponse::error(id, ERR_CODE_BAD_PARAMS, "params required");
             }
         };
 
         if params.name.is_none() && params.uri.is_none() {
-            return new_error_response(
-                req.id,
+            return McpResponse::error(
+                id,
                 ERR_CODE_BAD_PARAMS,
                 "either name or uri must be provided",
             );
         }
 
-        // Resolve resource.
-        let target = if let Some(name) = &params.name {
-            self.resources.get(name).cloned()
+        // Resolve resource by borrowing — no clone of the Resource struct.
+        let target: Option<&Resource> = if let Some(name) = &params.name {
+            self.resources.get(name)
         } else {
             let uri = params.uri.as_deref().unwrap_or_default();
-            self.resource_list.iter().find(|r| r.uri == uri).cloned()
+            self.resources.values().find(|r| r.uri == uri)
         };
 
         let target = match target {
             Some(t) => t,
             None => {
-                return new_error_response(req.id, ERR_CODE_BAD_PARAMS, "resource not found")
+                return McpResponse::error(id, ERR_CODE_BAD_PARAMS, "resource not found")
             }
         };
 
@@ -246,10 +254,10 @@ impl Server {
             match handler.call(&target.uri).await {
                 Ok(content) => {
                     let result = json!({ "contents": [content] });
-                    new_ok_response(req.id, result)
+                    McpResponse::ok(id, result)
                 }
-                Err(e) => new_error_response(
-                    req.id,
+                Err(e) => McpResponse::error(
+                    id,
                     ERR_CODE_INTERNAL,
                     format!("read resource: {}", e),
                 ),
@@ -263,9 +271,14 @@ impl Server {
                     "text": "",
                 }],
             });
-            new_ok_response(req.id, result)
+            McpResponse::ok(id, result)
         }
     }
+}
+
+/// Serialize a Value to a pre-validated `Box<RawValue>`.
+fn to_raw(value: &Value) -> Box<RawValue> {
+    RawValue::from_string(serde_json::to_string(value).unwrap()).unwrap()
 }
 
 /// Builder for constructing an MCP Server.
@@ -335,20 +348,55 @@ impl ServerBuilder {
 
     /// Build the server.
     pub fn build(self) -> Server {
-        let tool_map: HashMap<String, Tool> =
-            self.tools.iter().map(|t| (t.name.clone(), t.clone())).collect();
-        let res_map: HashMap<String, Resource> =
-            self.resources.iter().map(|r| (r.name.clone(), r.clone())).collect();
+        let server_name = self.server_name.unwrap_or_else(|| "mcpserver".into());
+        let server_version = self.server_version.unwrap_or_else(|| "1.0.0".into());
+
+        // Pre-serialize cached results once into RawValue (shared via Arc).
+        let initialize_result: Arc<RawValue> = Arc::from(to_raw(&json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {
+                "tools": {"listChanged": false},
+                "resources": {"subscribe": false, "listChanged": false},
+            },
+            "serverInfo": {
+                "name": server_name,
+                "version": server_version,
+            },
+        })));
+
+        let tools_list_result: Arc<RawValue> =
+            Arc::from(to_raw(&json!({ "tools": self.tools })));
+
+        let resources_list_result: Arc<RawValue> =
+            Arc::from(to_raw(&json!({ "resources": self.resources })));
+
+        // Move tools and resources into HashMaps — only the key String is
+        // cloned, the structs themselves are moved.
+        let tool_map: HashMap<String, Tool> = self
+            .tools
+            .into_iter()
+            .map(|t| {
+                let name = t.name.clone();
+                (name, t)
+            })
+            .collect();
+        let res_map: HashMap<String, Resource> = self
+            .resources
+            .into_iter()
+            .map(|r| {
+                let name = r.name.clone();
+                (name, r)
+            })
+            .collect();
 
         Server {
-            server_name: self.server_name.unwrap_or_else(|| "mcpserver".into()),
-            server_version: self.server_version.unwrap_or_else(|| "1.0.0".into()),
             tools: tool_map,
-            tool_list: self.tools,
             resources: res_map,
-            resource_list: self.resources,
             tool_handlers: HashMap::new(),
             resource_handlers: HashMap::new(),
+            initialize_result,
+            tools_list_result,
+            resources_list_result,
         }
     }
 }
@@ -403,7 +451,7 @@ mod tests {
             method: "ping".into(),
             params: None,
         };
-        let resp = srv.handle(req).await;
+        let resp = srv.handle(req).await.into_json_rpc();
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, ERR_CODE_INVALID_REQ);
     }
@@ -411,7 +459,7 @@ mod tests {
     #[tokio::test]
     async fn test_unknown_method() {
         let srv = test_server();
-        let resp = srv.handle(make_req("unknown/method", Some(json!(1)), None)).await;
+        let resp = srv.handle(make_req("unknown/method", Some(json!(1)), None)).await.into_json_rpc();
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, ERR_CODE_NO_METHOD);
     }
@@ -424,7 +472,7 @@ mod tests {
             "capabilities": {},
             "clientInfo": {"name": "test", "version": "0.1"}
         });
-        let resp = srv.handle(make_req("initialize", Some(json!(1)), Some(params))).await;
+        let resp = srv.handle(make_req("initialize", Some(json!(1)), Some(params))).await.into_json_rpc();
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         assert_eq!(result["protocolVersion"], PROTOCOL_VERSION);
@@ -434,7 +482,7 @@ mod tests {
     #[tokio::test]
     async fn test_ping() {
         let srv = test_server();
-        let resp = srv.handle(make_req("ping", Some(json!(1)), None)).await;
+        let resp = srv.handle(make_req("ping", Some(json!(1)), None)).await.into_json_rpc();
         assert!(resp.error.is_none());
         assert_eq!(resp.result.unwrap(), json!({}));
     }
@@ -451,7 +499,7 @@ mod tests {
     #[tokio::test]
     async fn test_tools_list() {
         let srv = test_server();
-        let resp = srv.handle(make_req("tools/list", Some(json!(1)), None)).await;
+        let resp = srv.handle(make_req("tools/list", Some(json!(1)), None)).await.into_json_rpc();
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
@@ -463,7 +511,7 @@ mod tests {
     async fn test_tools_call_success() {
         let srv = test_server();
         let params = json!({"name": "echo", "arguments": {"msg": "hello"}});
-        let resp = srv.handle(make_req("tools/call", Some(json!(1)), Some(params))).await;
+        let resp = srv.handle(make_req("tools/call", Some(json!(1)), Some(params))).await.into_json_rpc();
         assert!(resp.error.is_none());
         let result: ToolResult = serde_json::from_value(resp.result.unwrap()).unwrap();
         assert_eq!(result.content[0].text.as_deref(), Some("echo: hello"));
@@ -474,7 +522,7 @@ mod tests {
     async fn test_tools_call_missing_required() {
         let srv = test_server();
         let params = json!({"name": "echo", "arguments": {}});
-        let resp = srv.handle(make_req("tools/call", Some(json!(1)), Some(params))).await;
+        let resp = srv.handle(make_req("tools/call", Some(json!(1)), Some(params))).await.into_json_rpc();
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, ERR_CODE_BAD_PARAMS);
     }
@@ -483,7 +531,7 @@ mod tests {
     async fn test_tools_call_unknown_tool() {
         let srv = test_server();
         let params = json!({"name": "nonexistent", "arguments": {}});
-        let resp = srv.handle(make_req("tools/call", Some(json!(1)), Some(params))).await;
+        let resp = srv.handle(make_req("tools/call", Some(json!(1)), Some(params))).await.into_json_rpc();
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, ERR_CODE_NO_METHOD);
     }
@@ -496,7 +544,7 @@ mod tests {
             )
             .build();
         let params = json!({"name": "no-handler", "arguments": {}});
-        let resp = srv.handle(make_req("tools/call", Some(json!(1)), Some(params))).await;
+        let resp = srv.handle(make_req("tools/call", Some(json!(1)), Some(params))).await.into_json_rpc();
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, ERR_CODE_INTERNAL);
     }
@@ -504,7 +552,7 @@ mod tests {
     #[tokio::test]
     async fn test_resources_list() {
         let srv = test_server();
-        let resp = srv.handle(make_req("resources/list", Some(json!(1)), None)).await;
+        let resp = srv.handle(make_req("resources/list", Some(json!(1)), None)).await.into_json_rpc();
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         let resources = result["resources"].as_array().unwrap();
@@ -516,7 +564,7 @@ mod tests {
     async fn test_resources_read_by_name() {
         let srv = test_server();
         let params = json!({"name": "test"});
-        let resp = srv.handle(make_req("resources/read", Some(json!(1)), Some(params))).await;
+        let resp = srv.handle(make_req("resources/read", Some(json!(1)), Some(params))).await.into_json_rpc();
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         let contents = result["contents"].as_array().unwrap();
@@ -527,7 +575,7 @@ mod tests {
     async fn test_resources_read_by_uri() {
         let srv = test_server();
         let params = json!({"uri": "file:///test.csv"});
-        let resp = srv.handle(make_req("resources/read", Some(json!(1)), Some(params))).await;
+        let resp = srv.handle(make_req("resources/read", Some(json!(1)), Some(params))).await.into_json_rpc();
         assert!(resp.error.is_none());
     }
 
@@ -535,7 +583,7 @@ mod tests {
     async fn test_resources_read_not_found() {
         let srv = test_server();
         let params = json!({"name": "nonexistent"});
-        let resp = srv.handle(make_req("resources/read", Some(json!(1)), Some(params))).await;
+        let resp = srv.handle(make_req("resources/read", Some(json!(1)), Some(params))).await.into_json_rpc();
         assert!(resp.error.is_some());
     }
 
@@ -543,7 +591,20 @@ mod tests {
     async fn test_resources_read_missing_params() {
         let srv = test_server();
         let params = json!({});
-        let resp = srv.handle(make_req("resources/read", Some(json!(1)), Some(params))).await;
+        let resp = srv.handle(make_req("resources/read", Some(json!(1)), Some(params))).await.into_json_rpc();
         assert!(resp.error.is_some());
+    }
+
+    /// Verify that serializing an McpResponse produces valid JSON-RPC.
+    #[tokio::test]
+    async fn test_serialize_cached_response() {
+        let srv = test_server();
+        let resp = srv.handle(make_req("tools/list", Some(json!(1)), None)).await;
+        let json_str = serde_json::to_string(&resp).unwrap();
+        let parsed: JsonRpcResponse = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed.jsonrpc, "2.0");
+        assert_eq!(parsed.id, Some(json!(1)));
+        let tools = parsed.result.unwrap()["tools"].as_array().unwrap().len();
+        assert_eq!(tools, 1);
     }
 }

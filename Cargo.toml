@@ -1,27 +1,26 @@
 [package]
 name = "mcpserver"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.75"
-description = "MCP (Model Context Protocol) server library for Rust — implements the 2025-03-26 spec with Streamable HTTP transport"
+description = "MCP (Model Context Protocol) server library for Rust — a pure protocol handler implementing the 2025-03-26 spec"
 license = "MIT"
 repository = "https://github.com/hackemy/mcp_server"
 readme = "README.md"
 keywords = ["mcp", "context-protocol", "ai", "llm", "jsonrpc"]
-categories = ["web-programming", "web-programming::http-server"]
+categories = ["web-programming"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-uuid = { version = "1", features = ["v4"] }
-axum = "0.8"
-tokio = { version = "1", features = ["full"] }
+serde_json = { version = "1", features = ["raw_value"] }
 async-trait = "0.1"
 tracing = "0.1"
 thiserror = "2"
 
 [dev-dependencies]
+axum = "0.8"
 tokio = { version = "1", features = ["full", "test-util"] }
+uuid = { version = "1", features = ["v4"] }
 tower = "0.5"
 http-body-util = "0.1"
 hyper = "1"

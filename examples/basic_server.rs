@@ -1,4 +1,8 @@
-//! Basic MCP server example.
+//! Basic MCP server example with Axum HTTP transport.
+//!
+//! This shows how to wire `Server::handle()` into an Axum app — the library
+//! is a pure protocol handler, so *you* own the HTTP layer (routes, middleware,
+//! status codes, session management).
 //!
 //! Run with: `cargo run --example basic_server`
 //! Then test with:
@@ -6,18 +10,74 @@
 //!     -H "Content-Type: application/json" \
 //!     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::routing::get;
+use axum::body::Body;
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use mcpserver::{
-    http_router, text_result, FnToolHandler, McpError, ResourceContent, ResourceHandler, Server,
-    ToolHandler, ToolResult,
+    text_result, FnToolHandler, JsonRpcRequest, McpError, McpResponse, ResourceContent,
+    ResourceHandler, Server, ToolHandler, ToolResult,
 };
 use serde_json::{json, Value};
+use tokio::sync::RwLock;
+use uuid::Uuid;
 
-/// A struct-based tool handler for the "echo" tool.
+// ── Shared state for the HTTP layer ──
+
+struct AppState {
+    server: Server,
+    sessions: RwLock<HashSet<String>>,
+}
+
+// ── Axum handler: JSON-RPC → Server::handle() → HTTP response ──
+
+async fn handle_mcp(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<JsonRpcRequest>,
+) -> Response {
+    // Session management: create on initialize, pass through otherwise.
+    let session_id = if req.method == "initialize" {
+        let id = Uuid::new_v4().to_string();
+        state.sessions.write().await.insert(id.clone());
+        Some(id)
+    } else {
+        headers
+            .get("mcp-session-id")
+            .and_then(|h| h.to_str().ok())
+            .map(|s| s.to_string())
+    };
+
+    // The library handles all MCP protocol logic.
+    // McpResponse holds Arc references to pre-serialized JSON for cached
+    // endpoints — zero data copying.
+    let resp: McpResponse = state.server.handle(req).await;
+
+    // Notifications get 202 with no body.
+    if resp.is_notification() {
+        return (StatusCode::ACCEPTED, Body::empty()).into_response();
+    }
+
+    // McpResponse implements Serialize — cached results are embedded verbatim.
+    let mut response = Json(&resp).into_response();
+
+    if let Some(sid) = session_id {
+        response
+            .headers_mut()
+            .insert("mcp-session-id", sid.parse().unwrap());
+    }
+
+    response
+}
+
+// ── Tool & resource handlers ──
+
 struct EchoHandler;
 
 #[async_trait]
@@ -31,7 +91,6 @@ impl ToolHandler for EchoHandler {
     }
 }
 
-/// A struct-based resource handler for the "config" resource.
 struct ConfigHandler;
 
 #[async_trait]
@@ -50,17 +109,15 @@ impl ResourceHandler for ConfigHandler {
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    // Build the server from JSON definition files.
+    // Build the MCP server (pure protocol handler — no HTTP awareness).
     let mut server = Server::builder()
         .tools_file("examples/tools.json")
         .resources_file("examples/resources.json")
         .server_info("example-server", "0.1.0")
         .build();
 
-    // Register a struct-based handler.
     server.handle_tool("echo", Arc::new(EchoHandler));
 
-    // Register a closure-based handler using FnToolHandler.
     server.handle_tool(
         "greet",
         FnToolHandler::new(|args: Value| async move {
@@ -80,7 +137,6 @@ async fn main() {
         }),
     );
 
-    // Register a closure-based handler for geocode (stub).
     server.handle_tool(
         "geocode",
         FnToolHandler::new(|args: Value| async move {
@@ -100,14 +156,18 @@ async fn main() {
         }),
     );
 
-    // Register the resource handler.
     server.handle_resource("config", Arc::new(ConfigHandler));
 
-    // Build the Axum router.
-    // http_router() provides POST /mcp — merge with your own routes.
+    // Wire up the HTTP layer — you own the routes, middleware, and status codes.
+    let state = Arc::new(AppState {
+        server,
+        sessions: RwLock::new(HashSet::new()),
+    });
+
     let app = Router::new()
         .route("/healthz", get(|| async { Json(json!({"status": "ok"})) }))
-        .merge(http_router(server));
+        .route("/mcp", post(handle_mcp))
+        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     println!("MCP server listening on http://localhost:3000");

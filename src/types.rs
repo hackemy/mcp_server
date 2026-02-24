@@ -211,6 +211,7 @@ pub(crate) struct ResourceReadParams {
 pub(crate) struct InitializeParams {
     #[serde(default, rename = "protocolVersion")]
     pub protocol_version: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     pub capabilities: Option<Value>,
     #[serde(default, rename = "clientInfo")]

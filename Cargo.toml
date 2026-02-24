@@ -1,6 +1,28 @@
-[workspace]
-resolver = "2"
-members = [
-    "crates/mcpserver",
-    "crates/app",
-]
+[package]
+name = "mcpserver"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "MCP (Model Context Protocol) server library for Rust — implements the 2025-03-26 spec with Streamable HTTP transport"
+license = "MIT"
+repository = "https://github.com/hackemy/mcp_server"
+readme = "README.md"
+keywords = ["mcp", "model-context-protocol", "ai", "llm", "jsonrpc"]
+categories = ["web-programming", "web-programming::http-server"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+tracing = "0.1"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tower = "0.5"
+http-body-util = "0.1"
+hyper = "1"
+tracing-subscriber = "0.3"

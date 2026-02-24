@@ -1,0 +1,8 @@
+[
+  {
+    "name": "config",
+    "description": "Application configuration",
+    "uri": "file:///etc/app/config.json",
+    "mimeType": "application/json"
+  }
+]

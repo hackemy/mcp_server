@@ -29,7 +29,32 @@ pub fn http_router(server: Server) -> Router {
         sessions: RwLock::new(HashSet::new()),
     });
 
+    let server_name = state.server.server_name.clone();
+    let server_version = state.server.server_version.clone();
+
     Router::new()
+        .route("/", get(move || async move {
+            let html = format!(r#"<!DOCTYPE html>
+<html>
+<head><title>{name} {ver}</title>
+<style>
+  body {{ font-family: monospace; background: #111; color: #eee; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }}
+  .box {{ border: 1px solid #333; padding: 2rem 3rem; border-radius: 8px; }}
+  h1 {{ margin: 0 0 1rem 0; font-size: 1.4rem; }}
+  .ok {{ color: #4c4; }}
+</style>
+</head>
+<body>
+  <div class="box">
+    <h1>{name} {ver}</h1>
+    <p>Status: <span class="ok">OK</span></p>
+    <p>Protocol: MCP 2025-03-26</p>
+    <p>Endpoint: POST /mcp</p>
+  </div>
+</body>
+</html>"#, name = server_name, ver = server_version);
+            axum::response::Html(html)
+        }))
         .route("/mcp", post(handle_mcp))
         .route("/healthz", get(handle_healthz))
         .with_state(state)

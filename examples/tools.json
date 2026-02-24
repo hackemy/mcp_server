@@ -1,0 +1,63 @@
+[
+  {
+    "name": "echo",
+    "description": "Echoes the input message back to the caller",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "The message to echo"
+        }
+      },
+      "required": ["message"]
+    }
+  },
+  {
+    "name": "greet",
+    "description": "Greets a person by name in the chosen style",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Person's name"
+        },
+        "style": {
+          "type": "string",
+          "description": "Greeting style: formal or casual"
+        }
+      },
+      "required": ["name"],
+      "oneOf": [
+        { "required": ["name"] },
+        { "required": ["name", "style"] }
+      ]
+    }
+  },
+  {
+    "name": "geocode",
+    "description": "Returns coordinates for an address, or reverse-geocodes lat/lon",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string",
+          "description": "Street address to geocode"
+        },
+        "lat": {
+          "type": "number",
+          "description": "Latitude for reverse geocoding"
+        },
+        "lon": {
+          "type": "number",
+          "description": "Longitude for reverse geocoding"
+        }
+      },
+      "dependencies": {
+        "lat": ["lon"],
+        "lon": ["lat"]
+      }
+    }
+  }
+]

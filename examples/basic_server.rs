@@ -2,7 +2,7 @@
 //!
 //! This shows how to wire `Server::handle()` into an Axum app — the library
 //! is a pure protocol handler, so *you* own the HTTP layer (routes, middleware,
-//! status codes, session management).
+//! status codes, session management, and identity/context).
 //!
 //! Run with: `cargo run --example basic_server`
 //! Then test with:
@@ -54,10 +54,15 @@ async fn handle_mcp(
             .map(|s| s.to_string())
     };
 
+    // Build request context from the HTTP layer.
+    // In a real app, this would contain decoded JWT claims, tenant info, etc.
+    // For this demo we just pass an empty object.
+    let context = json!({});
+
     // The library handles all MCP protocol logic.
     // McpResponse holds Arc references to pre-serialized JSON for cached
     // endpoints — zero data copying.
-    let resp: McpResponse = state.server.handle(req).await;
+    let resp: McpResponse = state.server.handle(req, context).await;
 
     // Notifications get 202 with no body.
     if resp.is_notification() {
@@ -82,7 +87,7 @@ struct EchoHandler;
 
 #[async_trait]
 impl ToolHandler for EchoHandler {
-    async fn call(&self, args: Value) -> Result<ToolResult, McpError> {
+    async fn call(&self, args: Value, _context: Value) -> Result<ToolResult, McpError> {
         let message = args
             .get("message")
             .and_then(|v| v.as_str())
@@ -95,7 +100,7 @@ struct ConfigHandler;
 
 #[async_trait]
 impl ResourceHandler for ConfigHandler {
-    async fn call(&self, uri: &str) -> Result<ResourceContent, McpError> {
+    async fn call(&self, uri: &str, _context: Value) -> Result<ResourceContent, McpError> {
         Ok(ResourceContent {
             uri: uri.to_string(),
             mime_type: Some("application/json".into()),
@@ -118,9 +123,10 @@ async fn main() {
 
     server.handle_tool("echo", Arc::new(EchoHandler));
 
+    // Closure-based handler — context is available but unused here.
     server.handle_tool(
         "greet",
-        FnToolHandler::new(|args: Value| async move {
+        FnToolHandler::new(|args: Value, _context: Value| async move {
             let name = args
                 .get("name")
                 .and_then(|v| v.as_str())
@@ -137,9 +143,16 @@ async fn main() {
         }),
     );
 
+    // Handler that uses context to read the caller's identity.
     server.handle_tool(
         "geocode",
-        FnToolHandler::new(|args: Value| async move {
+        FnToolHandler::new(|args: Value, context: Value| async move {
+            // Example: read user_id from decoded JWT claims in context.
+            let _user_id = context
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("anonymous");
+
             if let Some(address) = args.get("address").and_then(|v| v.as_str()) {
                 Ok(text_result(format!(
                     "Geocoded '{}': lat=40.7128, lon=-74.0060",

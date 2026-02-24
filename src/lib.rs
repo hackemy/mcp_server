@@ -16,14 +16,15 @@
 //!     .server_info("my-server", "0.1.0")
 //!     .build();
 //!
-//! server.handle_tool("echo", FnToolHandler::new(|args: Value| async move {
+//! server.handle_tool("echo", FnToolHandler::new(|args: Value, _context: Value| async move {
 //!     let msg = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
 //!     Ok(text_result(msg))
 //! }));
 //!
 //! // Use from any HTTP framework — just deserialize the body and call handle():
+//! // The second argument is request context (e.g. decoded JWT claims).
 //! let req: JsonRpcRequest = serde_json::from_str(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#).unwrap();
-//! let resp = server.handle(req).await;
+//! let resp = server.handle(req, serde_json::json!({})).await;
 //! // resp implements Serialize — pass it to axum::Json, serde_json, etc.
 //! let json = serde_json::to_string(&resp).unwrap();
 //! # }

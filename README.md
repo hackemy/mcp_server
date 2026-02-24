@@ -21,7 +21,7 @@ The library has no runtime or HTTP dependencies. Add `axum`, `tokio`, etc. only 
 
 ```rust
 use mcpserver::{Server, FnToolHandler, text_result, JsonRpcRequest};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 // Build the server and register handlers.
 let mut server = Server::builder()
@@ -30,14 +30,15 @@ let mut server = Server::builder()
     .server_info("my-server", "0.1.0")
     .build();
 
-server.handle_tool("echo", FnToolHandler::new(|args: Value| async move {
+server.handle_tool("echo", FnToolHandler::new(|args: Value, _context: Value| async move {
     let msg = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
     Ok(text_result(msg))
 }));
 
 // Deserialize from any source, call handle(), serialize the response.
+// The second argument is request context (e.g. decoded JWT claims).
 let req: JsonRpcRequest = serde_json::from_str(body).unwrap();
-let resp = server.handle(req).await;
+let resp = server.handle(req, json!({})).await;
 
 // resp.is_notification() → true for fire-and-forget methods (return 202, no body)
 let json = serde_json::to_string(&resp).unwrap();
@@ -99,8 +100,9 @@ struct MyHandler;
 
 #[async_trait]
 impl ToolHandler for MyHandler {
-    async fn call(&self, args: Value) -> Result<ToolResult, McpError> {
-        Ok(text_result("done"))
+    async fn call(&self, args: Value, context: Value) -> Result<ToolResult, McpError> {
+        let user_id = context.get("user_id").and_then(|v| v.as_str()).unwrap_or("anonymous");
+        Ok(text_result(format!("done by {}", user_id)))
     }
 }
 ```
@@ -111,7 +113,7 @@ impl ToolHandler for MyHandler {
 use mcpserver::{FnToolHandler, text_result};
 use serde_json::Value;
 
-let handler = FnToolHandler::new(|args: Value| async move {
+let handler = FnToolHandler::new(|args: Value, _context: Value| async move {
     Ok(text_result("done"))
 });
 ```
@@ -121,12 +123,13 @@ let handler = FnToolHandler::new(|args: Value| async move {
 ```rust
 use async_trait::async_trait;
 use mcpserver::{ResourceHandler, ResourceContent, McpError};
+use serde_json::Value;
 
 struct ConfigReader;
 
 #[async_trait]
 impl ResourceHandler for ConfigReader {
-    async fn call(&self, uri: &str) -> Result<ResourceContent, McpError> {
+    async fn call(&self, uri: &str, _context: Value) -> Result<ResourceContent, McpError> {
         Ok(ResourceContent {
             uri: uri.to_string(),
             mime_type: Some("application/json".into()),
@@ -145,12 +148,15 @@ Since the library is transport-agnostic, you wire up HTTP yourself. Here's the p
 use std::sync::Arc;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json, Router, routing::post, body::Body};
 use mcpserver::{Server, JsonRpcRequest};
+use serde_json::json;
 
 async fn handle_mcp(
     State(server): State<Arc<Server>>,
     Json(req): Json<JsonRpcRequest>,
 ) -> impl IntoResponse {
-    let resp = server.handle(req).await;
+    // Build context from your auth layer (JWT claims, API key metadata, etc.)
+    let context = json!({});
+    let resp = server.handle(req, context).await;
     if resp.is_notification() {
         return (StatusCode::ACCEPTED, Body::empty()).into_response();
     }
@@ -236,14 +242,15 @@ curl -s -X POST http://localhost:3000/mcp \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | jq .
 ```
 
-### With JWT authentication
+### With JWT authentication and identity context
 
-Since `mcpserver` is transport-agnostic, you add auth at the HTTP layer. Here's how to mount a JWT-protected endpoint alongside a public one:
+Since `mcpserver` is transport-agnostic, you add auth at the HTTP layer. The decoded JWT claims are passed as `context` to `Server::handle()`, making them available to every tool and resource handler.
 
 ```rust
-use axum::{extract::Request, middleware::{self, Next}, response::Response, http::StatusCode};
+use axum::{extract::Request, middleware::{self, Next}, response::Response, http::StatusCode, Extension};
+use serde_json::{json, Value};
 
-async fn require_jwt(req: Request, next: Next) -> Result<Response, StatusCode> {
+async fn require_jwt(mut req: Request, next: Next) -> Result<Response, StatusCode> {
     let auth = req.headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -254,19 +261,50 @@ async fn require_jwt(req: Request, next: Next) -> Result<Response, StatusCode> {
     }
 
     let token = &auth[7..];
-    // Validate the JWT (use jsonwebtoken, jwt-simple, etc.)
-    validate_jwt(token).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    // Decode the JWT (use jsonwebtoken, jwt-simple, etc.)
+    let claims = decode_jwt(token).map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    // Store decoded claims as an extension for the handler to read.
+    // The shape depends on your provider (Cognito, Auth0, custom, etc.)
+    req.extensions_mut().insert(claims);
 
     Ok(next.run(req).await)
 }
 
+async fn handle_private_mcp(
+    State(state): State<Arc<AppState>>,
+    Extension(claims): Extension<Value>,  // decoded JWT from middleware
+    Json(req): Json<JsonRpcRequest>,
+) -> Response {
+    // Pass the decoded JWT claims as context — handlers read user_id, tenant_id, etc.
+    let resp = state.server.handle(req, claims).await;
+    if resp.is_notification() {
+        return (StatusCode::ACCEPTED, Body::empty()).into_response();
+    }
+    Json(&resp).into_response()
+}
+
 let app = Router::new()
-    // Public — no auth required
+    // Public — no auth, empty context
     .route("/mcp", post(handle_mcp))
-    // Protected — requires a valid JWT
-    .route("/mcp_private", post(handle_mcp)
+    // Protected — JWT claims flow into handler context
+    .route("/mcp_private", post(handle_private_mcp)
         .layer(middleware::from_fn(require_jwt)))
     .with_state(state);
+```
+
+Inside any tool handler, read claims from context:
+
+```rust
+#[async_trait]
+impl ToolHandler for MyHandler {
+    async fn call(&self, args: Value, context: Value) -> Result<ToolResult, McpError> {
+        let user_id = context.get("sub").and_then(|v| v.as_str()).unwrap_or("anonymous");
+        let tenant_id = context.get("custom:tenant_id").and_then(|v| v.as_str());
+        // ... use identity to scope queries, check permissions, etc.
+        Ok(text_result("done"))
+    }
+}
 ```
 
 Then call the protected endpoint with a Bearer token:

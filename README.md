@@ -1,5 +1,8 @@
 # mcpserver
 
+[![crates.io](https://img.shields.io/crates/v/mcpserver.svg)](https://crates.io/crates/mcpserver)
+[![docs.rs](https://docs.rs/mcpserver/badge.svg)](https://docs.rs/mcpserver)
+
 A Rust library for building [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) servers, implementing the **2025-03-26** specification with Streamable HTTP transport.
 
 Define your tools and resources in JSON, register async handlers, and serve over HTTP with Axum — or call `Server::handle()` directly for Lambda / custom integrations.
@@ -9,18 +12,26 @@ Define your tools and resources in JSON, register async handlers, and serve over
 ```toml
 [dependencies]
 mcpserver = "0.1"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
 ```
 
 Or via the CLI:
 
 ```bash
-cargo add mcpserver
+cargo add mcpserver tokio --features tokio/full
+cargo add serde_json
+```
+
+You'll also need `axum` if you want to add custom routes alongside the MCP endpoint, and `async-trait` for struct-based handlers:
+
+```bash
+cargo add axum async-trait
 ```
 
 ## Quick start
 
 ```rust
-use std::sync::Arc;
 use mcpserver::{Server, FnToolHandler, http_router, text_result};
 use serde_json::Value;
 
@@ -37,6 +48,7 @@ async fn main() {
         Ok(text_result(msg))
     }));
 
+    // http_router() provides POST /mcp — merge with your own routes as needed.
     let app = http_router(server);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();

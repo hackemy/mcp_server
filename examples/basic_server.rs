@@ -9,11 +9,13 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use axum::routing::get;
+use axum::{Json, Router};
 use mcpserver::{
     http_router, text_result, FnToolHandler, McpError, ResourceContent, ResourceHandler, Server,
     ToolHandler, ToolResult,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// A struct-based tool handler for the "echo" tool.
 struct EchoHandler;
@@ -101,11 +103,15 @@ async fn main() {
     // Register the resource handler.
     server.handle_resource("config", Arc::new(ConfigHandler));
 
-    // Build the Axum router and serve.
-    let app = http_router(server);
+    // Build the Axum router.
+    // http_router() provides POST /mcp — merge with your own routes.
+    let app = Router::new()
+        .route("/healthz", get(|| async { Json(json!({"status": "ok"})) }))
+        .merge(http_router(server));
+
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     println!("MCP server listening on http://localhost:3000");
-    println!("  POST /mcp  — MCP JSON-RPC endpoint");
+    println!("  POST /mcp     — MCP JSON-RPC endpoint");
     println!("  GET  /healthz — health check");
     axum::serve(listener, app).await.unwrap();
 }

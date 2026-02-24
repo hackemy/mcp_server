@@ -139,15 +139,19 @@ impl ResourceHandler for ConfigReader {
 
 ## HTTP transport
 
-`http_router()` returns an `axum::Router` with these routes:
+`http_router()` returns an `axum::Router` with a single route: `POST /mcp` (the MCP JSON-RPC endpoint). Session management via `mcp-session-id` headers is handled automatically.
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/` | Server info page |
-| `POST` | `/mcp` | MCP JSON-RPC endpoint |
-| `GET` | `/healthz` | Health check |
+Merge it into your own router to add health checks, landing pages, or middleware:
 
-Session management via `mcp-session-id` headers is handled automatically.
+```rust
+use axum::{routing::get, Json, Router};
+use mcpserver::{Server, http_router};
+
+let server = Server::builder().build();
+let app = Router::new()
+    .route("/healthz", get(|| async { Json(serde_json::json!({"status": "ok"})) }))
+    .merge(http_router(server));
+```
 
 ## Custom integration (Lambda, etc.)
 

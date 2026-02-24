@@ -6,10 +6,9 @@ use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::post,
     Json, Router,
 };
-use serde_json::json;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -22,46 +21,28 @@ pub(crate) struct HttpState {
     sessions: RwLock<HashSet<String>>,
 }
 
-/// Create an Axum router for the MCP server.
+/// Create an Axum router with the MCP JSON-RPC endpoint at `POST /mcp`.
+///
+/// Merge this into your own router to add health checks, landing pages, etc.
+///
+/// ```rust,no_run
+/// use axum::{routing::get, Json, Router};
+/// use mcpserver::{Server, http_router};
+///
+/// let server = Server::builder().build();
+/// let app = Router::new()
+///     .route("/healthz", get(|| async { Json(serde_json::json!({"status": "ok"})) }))
+///     .merge(http_router(server));
+/// ```
 pub fn http_router(server: Server) -> Router {
     let state = Arc::new(HttpState {
         server,
         sessions: RwLock::new(HashSet::new()),
     });
 
-    let server_name = state.server.server_name.clone();
-    let server_version = state.server.server_version.clone();
-
     Router::new()
-        .route("/", get(move || async move {
-            let html = format!(r#"<!DOCTYPE html>
-<html>
-<head><title>{name} {ver}</title>
-<style>
-  body {{ font-family: monospace; background: #111; color: #eee; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }}
-  .box {{ border: 1px solid #333; padding: 2rem 3rem; border-radius: 8px; }}
-  h1 {{ margin: 0 0 1rem 0; font-size: 1.4rem; }}
-  .ok {{ color: #4c4; }}
-</style>
-</head>
-<body>
-  <div class="box">
-    <h1>{name} {ver}</h1>
-    <p>Status: <span class="ok">OK</span></p>
-    <p>Protocol: MCP 2025-03-26</p>
-    <p>Endpoint: POST /mcp</p>
-  </div>
-</body>
-</html>"#, name = server_name, ver = server_version);
-            axum::response::Html(html)
-        }))
         .route("/mcp", post(handle_mcp))
-        .route("/healthz", get(handle_healthz))
         .with_state(state)
-}
-
-async fn handle_healthz() -> impl IntoResponse {
-    Json(json!({"status": "ok"}))
 }
 
 async fn handle_mcp(
@@ -114,6 +95,7 @@ mod tests {
     use crate::server::Server;
     use axum::body::Body;
     use axum::http::Request;
+    use serde_json::json;
     use tower::ServiceExt;
 
     fn test_router() -> Router {
@@ -129,18 +111,6 @@ mod tests {
 
     fn json_body(body: serde_json::Value) -> Body {
         Body::from(serde_json::to_vec(&body).unwrap())
-    }
-
-    #[tokio::test]
-    async fn test_health_check() {
-        let app = test_router();
-        let req = Request::builder()
-            .method("GET")
-            .uri("/healthz")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

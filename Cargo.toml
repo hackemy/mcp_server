@@ -7,7 +7,7 @@ description = "MCP (Model Context Protocol) server library for Rust — implemen
 license = "MIT"
 repository = "https://github.com/hackemy/mcp_server"
 readme = "README.md"
-keywords = ["mcp", "model-context-protocol", "ai", "llm", "jsonrpc"]
+keywords = ["mcp", "context-protocol", "ai", "llm", "jsonrpc"]
 categories = ["web-programming", "web-programming::http-server"]
 
 [dependencies]

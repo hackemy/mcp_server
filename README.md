@@ -174,29 +174,116 @@ let app = Router::new()
 
 See [`examples/basic_server.rs`](examples/basic_server.rs) for a complete working example with session management, health checks, and tool handlers.
 
-## Running the example
+## Running the demo
 
 ```bash
 cargo run --example basic_server
 ```
 
-Then in another terminal:
+The demo starts on `http://localhost:3000` with these endpoints:
+
+| Endpoint | Description |
+|---|---|
+| `POST /mcp` | MCP JSON-RPC endpoint |
+| `GET /healthz` | Health check |
+
+### Basic usage (no auth)
 
 ```bash
-# Initialize
-curl -X POST http://localhost:3000/mcp \
+# Initialize a session
+curl -s -X POST http://localhost:3000/mcp \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | jq .
 
-# List tools
-curl -X POST http://localhost:3000/mcp \
+# List available tools
+curl -s -X POST http://localhost:3000/mcp \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | jq .
 
 # Call a tool
-curl -X POST http://localhost:3000/mcp \
+curl -s -X POST http://localhost:3000/mcp \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"message":"hello"}}}'
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"message":"hello"}}}' | jq .
+
+# List resources
+curl -s -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":4,"method":"resources/list"}' | jq .
+
+# Read a resource
+curl -s -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":5,"method":"resources/read","params":{"name":"config"}}' | jq .
+```
+
+### With session tracking
+
+The demo returns an `mcp-session-id` header on `initialize`. Pass it back on subsequent requests:
+
+```bash
+# Initialize and capture the session ID
+SESSION=$(curl -s -D- -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  | grep -i mcp-session-id | tr -d '\r' | awk '{print $2}')
+
+echo "Session: $SESSION"
+
+# Use the session ID for subsequent calls
+curl -s -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -H "mcp-session-id: $SESSION" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | jq .
+```
+
+### With JWT authentication
+
+Since `mcpserver` is transport-agnostic, you add auth at the HTTP layer. Here's how to mount a JWT-protected endpoint alongside a public one:
+
+```rust
+use axum::{extract::Request, middleware::{self, Next}, response::Response, http::StatusCode};
+
+async fn require_jwt(req: Request, next: Next) -> Result<Response, StatusCode> {
+    let auth = req.headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !auth.starts_with("Bearer ") {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let token = &auth[7..];
+    // Validate the JWT (use jsonwebtoken, jwt-simple, etc.)
+    validate_jwt(token).map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    Ok(next.run(req).await)
+}
+
+let app = Router::new()
+    // Public — no auth required
+    .route("/mcp", post(handle_mcp))
+    // Protected — requires a valid JWT
+    .route("/mcp_private", post(handle_mcp)
+        .layer(middleware::from_fn(require_jwt)))
+    .with_state(state);
+```
+
+Then call the protected endpoint with a Bearer token:
+
+```bash
+TOKEN="eyJhbGciOiJIUzI1NiIs..."
+
+curl -s -X POST http://localhost:3000/mcp_private \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | jq .
+
+# Without a token → 401 Unauthorized
+curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:3000/mcp_private \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+# 401
 ```
 
 ## Nginx deployment

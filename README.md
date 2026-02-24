@@ -11,7 +11,7 @@ A Rust library for building [Model Context Protocol](https://modelcontextprotoco
 
 ```toml
 [dependencies]
-mcpserver = "0.2"
+mcpserver = "0.3"
 serde_json = "1"
 ```
 

@@ -1,6 +1,6 @@
 [package]
 name = "mcpserver"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.75"
 description = "MCP (Model Context Protocol) server library for Rust — a pure protocol handler implementing the 2025-03-26 spec"
